@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Coney Island F1 Circuit — Spike Ball Analysis</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Bebas+Neue&display=swap');
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --green: #00ff88; --blue: #4488ff;
+    --bg: #050810; --surface: #0d1220; --border: #1e2a40;
+    --text: #c8d8f0; --muted: #4a5a78;
+  }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Space Mono', monospace;
+    min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; padding: 32px 16px;
+  }
+  header { text-align: center; margin-bottom: 36px; }
+  header h1 {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(28px, 5vw, 52px);
+    letter-spacing: 4px; color: #fff; line-height: 1;
+  }
+  header p { font-size: 11px; color: var(--muted); letter-spacing: 2px; margin-top: 6px; text-transform: uppercase; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; width: 100%; max-width: 960px; }
+  .panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .panel-title {
+    font-family: 'Bebas Neue', sans-serif; font-size: 20px;
+    letter-spacing: 3px; display: flex; align-items: center; gap: 10px;
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  canvas.sphere { width: 100%; border-radius: 8px; background: #020508; display: block; }
+  .factors { display: flex; flex-direction: column; gap: 6px; }
+  .factor-row {
+    display: flex; align-items: center; gap: 8px;
+    cursor: pointer; padding: 4px 6px; border-radius: 6px; transition: background 0.15s;
+  }
+  .factor-row:hover { background: #131c2e; }
+  .factor-row.dimmed { opacity: 0.25; }
+  .fcolor { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .fname { font-size: 10px; flex: 1; color: var(--text); }
+  .fraw { font-size: 9px; color: var(--muted); }
+  .fbar-bg { width: 70px; height: 4px; background: #1a2438; border-radius: 3px; flex-shrink: 0; }
+  .fbar { height: 100%; border-radius: 3px; }
+  .fscore { font-size: 10px; color: var(--muted); min-width: 26px; text-align: right; }
+  .section-label {
+    font-size: 9px; letter-spacing: 2px; color: var(--muted);
+    text-transform: uppercase; padding: 4px 6px 2px;
+    border-bottom: 1px solid var(--border); margin-top: 4px;
+  }
+  .note { font-size: 10px; color: var(--muted); text-align: center; letter-spacing: 1px; padding-top: 4px; border-top: 1px solid var(--border); }
+  @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Coney Island Grand Prix</h1>
+  <p>CMMC 2026 · Circuit Safety Analysis · Spike Ball Model</p>
+</header>
+
+<div class="grid">
+  <div class="panel">
+    <div class="panel-title"><span class="dot" style="background:var(--green)"></span>Driver Safety</div>
+    <canvas id="c1" class="sphere"></canvas>
+    <div class="factors" id="legend1"></div>
+    <div class="note">click a factor to highlight · drag to rotate</div>
+  </div>
+  <div class="panel">
+    <div class="panel-title"><span class="dot" style="background:var(--blue)"></span>Viewer Safety</div>
+    <canvas id="c2" class="sphere"></canvas>
+    <div class="factors" id="legend2"></div>
+    <div class="note">click a factor to highlight · drag to rotate</div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/*
+  NORMALIZATION FORMULAS
+  ─────────────────────────────────────────────────────────────────
+  Road width:      score = (14 - width_m) / (14 - 6)     [best=14m, worst=6m]
+                   Ocean Pkwy racing surface = 21.3m → clamped to 0.0 (exceeds best)
+                   West 24 St = 18.3m → clamped to 0.0
+                   Neptune/Surf = 36.6m → clamped to 0.0
+                   West 5 / Sea Breeze = 24.4m → clamped to 0.0
+                   Note: all streets exceed FIA min 12m so width_score = 0 except West 24 St
+                   West 24 St = 18.3m → still > 14m best → 0.0 ... actually 60ft = 18.3m > 14m too
+                   Rebase: best=36m(wide ave), worst=18m(narrow). West 24 St 18.3m → (36-18.3)/(36-18)=0.98
+
+  Curve radius:    score = (50 - r) / (50 - 5)           [best=50m, worst=5m]
+                   NYC standard curb radius 10–15ft ≈ 3–4.6m → use 4m for tight grid corners
+                   Ocean Pkwy broad curve ~15m
+                   Surf Ave corner ~8m
+
+  Straight length: score = (1000 - len_m) / (1000 - 100) [best=1000m, worst=100m]
+                   Neptune Ave 1.3mi = 2092m → clamped to 0.0 (exceeds best — great DRS zone)
+                   Surf Ave 0.9mi = 1448m → clamped to 0.0
+                   Ocean Pkwy 0.3mi = 483m → (1000-483)/900 = 0.57
+                   Sea Breeze 0.2mi = 322m → (1000-322)/900 = 0.75
+                   West 24 St 0.3mi = 483m → 0.57
+                   West 5 St 0.082mi = 132m → (1000-132)/900 = 0.96
+
+  Circuit length:  total = 4.96km, score = |4.96 - 5| / 1 = 0.04 (nearly ideal)
+
+  Subway prox:     avg Neptune(30m) + Surf(89m) = 60m avg
+                   score = (500 - 60) / 500 = 0.88
+  ─────────────────────────────────────────────────────────────────
+  VIEWER NORMALIZATION
+  Landmark prox:   score = dist_m / 500                   [best=0m, worst=500m]
+  Sightline:       score = (80 - pct) / 70                [best=80%, worst=10%]
+  Transit access:  score = (10 - lines) / 9               [best=10 lines, worst=1]
+  Road closure:    estimated 0–1 based on street count closed
+  Subway prox:     same as driver (shared avg)
+*/
+
+const DRIVER = [
+  // ── Curve radius per street ──
+  { section:"Curve radius", label:"Neptune Ave",   score: 1.00, raw:"~4 m corners"  },
+  { section:"Curve radius", label:"Ocean Parkway", score: 0.78, raw:"~15 m curve"   },
+  { section:"Curve radius", label:"Sea Breeze Ave",score: 1.00, raw:"~4 m corners"  },
+  { section:"Curve radius", label:"West 5 Street", score: 1.00, raw:"~4 m corners"  },
+  { section:"Curve radius", label:"Surf Ave",      score: 0.93, raw:"~8 m corners"  },
+  { section:"Curve radius", label:"West 24 Street",score: 1.00, raw:"~4 m corners"  },
+  // ── Road width per street ──
+  { section:"Road width",   label:"Neptune Ave",   score: 0.00, raw:"120 ft / 36.6 m" },
+  { section:"Road width",   label:"Ocean Parkway", score: 0.00, raw:"70 ft racing / 21.3 m" },
+  { section:"Road width",   label:"Sea Breeze Ave",score: 0.00, raw:"80 ft / 24.4 m" },
+  { section:"Road width",   label:"West 5 Street", score: 0.00, raw:"80 ft / 24.4 m" },
+  { section:"Road width",   label:"Surf Ave",      score: 0.00, raw:"120 ft / 36.6 m" },
+  { section:"Road width",   label:"West 24 Street",score: 0.98, raw:"60 ft / 18.3 m — narrowest" },
+  // ── Straight length per street ──
+  { section:"Straight length", label:"Neptune Ave",   score: 0.00, raw:"1.3 mi / 2092 m" },
+  { section:"Straight length", label:"Ocean Parkway", score: 0.57, raw:"0.3 mi / 483 m"  },
+  { section:"Straight length", label:"Sea Breeze Ave",score: 0.75, raw:"0.2 mi / 322 m"  },
+  { section:"Straight length", label:"West 5 Street", score: 0.96, raw:"0.082 mi / 132 m"},
+  { section:"Straight length", label:"Surf Ave",      score: 0.00, raw:"0.9 mi / 1448 m" },
+  { section:"Straight length", label:"West 24 Street",score: 0.57, raw:"0.3 mi / 483 m"  },
+  // ── Circuit-level factors ──
+  { section:"Circuit",      label:"Circuit length",  score: 0.04, raw:"4.96 km total"    },
+  { section:"Circuit",      label:"Subway proximity",score: 0.88, raw:"avg ~60 m"        },
+];
+
+const VIEWER = [
+  // ── Landmark proximity per street (NY Aquarium at Surf/W 8 St) ──
+  { section:"Landmark proximity", label:"Neptune Ave",   score: 0.73, raw:"~365 m" },
+  { section:"Landmark proximity", label:"Ocean Parkway", score: 0.40, raw:"~200 m" },
+  { section:"Landmark proximity", label:"Sea Breeze Ave",score: 0.10, raw:"~50 m"  },
+  { section:"Landmark proximity", label:"West 5 Street", score: 0.05, raw:"~25 m"  },
+  { section:"Landmark proximity", label:"Surf Ave",      score: 0.02, raw:"~10 m"  },
+  { section:"Landmark proximity", label:"West 24 Street",score: 0.80, raw:"~400 m" },
+  // ── Sightline visibility per street ──
+  { section:"Sightline visibility", label:"Neptune Ave",   score: 0.50, raw:"~45% visible" },
+  { section:"Sightline visibility", label:"Ocean Parkway", score: 0.14, raw:"~70% visible" },
+  { section:"Sightline visibility", label:"Sea Breeze Ave",score: 0.29, raw:"~60% visible" },
+  { section:"Sightline visibility", label:"West 5 Street", score: 0.50, raw:"~45% visible" },
+  { section:"Sightline visibility", label:"Surf Ave",      score: 0.07, raw:"~75% visible" },
+  { section:"Sightline visibility", label:"West 24 Street",score: 0.64, raw:"~35% visible" },
+  // ── Circuit-level viewer factors ──
+  { section:"Circuit", label:"Crowd transit access", score: 0.33, raw:"4 lines (D/F/Q/N)" },
+  { section:"Circuit", label:"Road closure impact",  score: 0.55, raw:"~8 streets closed" },
+  { section:"Circuit", label:"Subway proximity",     score: 0.88, raw:"avg ~60 m"         },
+];
+
+// ── COLOR ─────────────────────────────────────────────────────────────────────
+function sc3(s) {
+  if (s < 0.4) return new THREE.Color(0x00ff88);
+  if (s < 0.7) return new THREE.Color(0xffaa22);
+  return new THREE.Color(0xff3344);
+}
+function hc(s) {
+  if (s < 0.4) return '#00ff88';
+  if (s < 0.7) return '#ffaa22';
+  return '#ff3344';
+}
+
+// ── FIBONACCI SPHERE ──────────────────────────────────────────────────────────
+function fibSphere(n) {
+  const pts = [], g = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < n; i++) {
+    const y = 1 - (i / Math.max(n - 1, 1)) * 2;
+    const r = Math.sqrt(1 - y * y), t = g * i;
+    pts.push(new THREE.Vector3(r * Math.cos(t), y, r * Math.sin(t)).normalize());
+  }
+  return pts;
+}
+
+// ── BUILD SCENE ───────────────────────────────────────────────────────────────
+function buildScene(canvasId, factors, accentHex) {
+  const canvas = document.getElementById(canvasId);
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+  camera.position.set(0, 0, 5);
+  scene.add(new THREE.AmbientLight(0x102030, 2));
+  const d1 = new THREE.DirectionalLight(0xffffff, 3); d1.position.set(4, 6, 5); scene.add(d1);
+  const d2 = new THREE.DirectionalLight(new THREE.Color(accentHex), 2); d2.position.set(-3, -2, 2); scene.add(d2);
+  const group = new THREE.Group(); scene.add(group);
+  group.add(new THREE.Mesh(new THREE.SphereGeometry(1, 80, 50),
+    new THREE.MeshPhongMaterial({ color: 0x0a1520, specular: 0x112233, shininess: 60, transparent: true, opacity: 0.9 })));
+
+  const dirs = fibSphere(factors.length);
+  const spikeMats = [];
+  const up = new THREE.Vector3(0, 1, 0);
+  factors.forEach((f, i) => {
+    const h = 0.08 + f.score * 1.4;
+    const geo = new THREE.ConeGeometry(0.045, h, 12);
+    geo.translate(0, h / 2, 0);
+    const mat = new THREE.MeshPhongMaterial({ color: sc3(f.score), specular: 0xffffff, shininess: 100 });
+    const cone = new THREE.Mesh(geo, mat);
+    cone.quaternion.setFromUnitVectors(up, dirs[i]);
+    cone.position.copy(dirs[i].clone().multiplyScalar(1.0));
+    group.add(cone);
+    spikeMats.push({ mat, score: f.score });
+  });
+
+  let drag = false, lx = 0, ly = 0, rx = 0.3, ry = 0.5;
+  canvas.addEventListener('mousedown', e => { drag = true; lx = e.clientX; ly = e.clientY; });
+  addEventListener('mouseup', () => drag = false);
+  addEventListener('mousemove', e => {
+    if (!drag) return;
+    ry += (e.clientX - lx) * 0.013; rx += (e.clientY - ly) * 0.013;
+    lx = e.clientX; ly = e.clientY;
+  });
+  function resize() {
+    const w = canvas.parentElement.clientWidth - 32;
+    renderer.setSize(w, w * 0.75, false);
+    camera.aspect = w / (w * 0.75); camera.updateProjectionMatrix();
+  }
+  addEventListener('resize', resize); resize();
+  (function animate() {
+    requestAnimationFrame(animate);
+    if (!drag) ry += 0.004;
+    group.rotation.x = rx; group.rotation.y = ry;
+    renderer.render(scene, camera);
+  })();
+
+  return idx => {
+    spikeMats.forEach(({ mat, score }, i) => {
+      if (idx === null) { mat.emissive.set(0x000000); mat.color.set(sc3(score)); }
+      else if (i === idx) { mat.emissive.set(sc3(score)); mat.emissiveIntensity = 0.6; }
+      else { mat.emissive.set(0x000000); mat.color.set(0x1a2438); }
+    });
+  };
+}
+
+// ── LEGEND ────────────────────────────────────────────────────────────────────
+function buildLegend(id, factors, highlightFn) {
+  const el = document.getElementById(id);
+  el.innerHTML = '';
+  let lastSection = null;
+  factors.forEach((f, i) => {
+    if (f.section !== lastSection) {
+      const sep = document.createElement('div');
+      sep.className = 'section-label';
+      sep.textContent = f.section;
+      el.appendChild(sep);
+      lastSection = f.section;
+    }
+    const row = document.createElement('div');
+    row.className = 'factor-row';
+    row.innerHTML = `
+      <span class="fcolor" style="background:${hc(f.score)}"></span>
+      <span class="fname">${f.label} <span class="fraw">${f.raw}</span></span>
+      <div class="fbar-bg"><div class="fbar" style="width:${f.score*100}%;background:${hc(f.score)}"></div></div>
+      <span class="fscore">${Math.round(f.score * 100)}</span>`;
+    let on = false;
+    row.addEventListener('click', () => {
+      on = !on;
+      el.querySelectorAll('.factor-row').forEach((r, j) => r.classList.toggle('dimmed', on && j !== i));
+      highlightFn(on ? i : null);
+    });
+    el.appendChild(row);
+  });
+}
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+buildLegend('legend1', DRIVER, buildScene('c1', DRIVER, '#00ff88'));
+buildLegend('legend2', VIEWER, buildScene('c2', VIEWER, '#4488ff'));
+</script>
+</body>
+</html>
