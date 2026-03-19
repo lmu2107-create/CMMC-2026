@@ -214,20 +214,20 @@ const DRIVER = [
   // ── Braking zone ─────────────────────────────────────────────────────────────
   // raw_i = min(10, L_i / d_i × 5)   viz = 1 − raw/10
   // v_corner = √(3g·r); d = (v_entry²−v_corner²)/(2×44.1); v_entry cap 80 m/s
-  { section:"Braking zone", label:"Neptune Ave",    score: 0.00, raw:"L=2092 m  d=52 m  L/d=40.2" },
-  { section:"Braking zone", label:"Ocean Parkway",  score: 0.00, raw:"L=483 m   d=42 m  L/d=11.5" },
-  { section:"Braking zone", label:"Sea Breeze Ave", score: 0.00, raw:"L=322 m   d=56 m  L/d=5.75" },
-  { section:"Braking zone", label:"West 5 Street",  score: 0.00, raw:"L=132 m   d=29 m  L/d=4.55" },
-  { section:"Braking zone", label:"Surf Ave",       score: 0.00, raw:"L=1448 m  d=48 m  L/d=30.2" },
-  { section:"Braking zone", label:"West 24 Street", score: 0.00, raw:"L=483 m   d=61 m  L/d=7.92" },
+  { section:"Spike 4 · braking zone", label:"Neptune Ave",    score: 0.00, raw:"L=2092 m  d=52 m  L/d=40.2" },
+  { section:"Spike 4 · braking zone", label:"Ocean Parkway",  score: 0.00, raw:"L=483 m   d=42 m  L/d=11.5" },
+  { section:"Spike 4 · braking zone", label:"Sea Breeze Ave", score: 0.00, raw:"L=322 m   d=56 m  L/d=5.75" },
+  { section:"Spike 4 · braking zone", label:"West 5 Street",  score: 0.00, raw:"L=132 m   d=29 m  L/d=4.55" },
+  { section:"Spike 4 · braking zone", label:"Surf Ave",       score: 0.00, raw:"L=1448 m  d=48 m  L/d=30.2" },
+  { section:"Spike 4 · braking zone", label:"West 24 Street", score: 0.00, raw:"L=483 m   d=61 m  L/d=7.92" },
   // ── Subway proximity (road-surface risk) ─────────────────────────────────────
   // viz = max(0, (500 − dist_m) / 500)   dist from CSV (mi→m ×1609.34)
-  { section:"Subway proximity", label:"Neptune Ave",    score: 0.00, raw:"0.48 mi / 773 m  → clear" },
-  { section:"Subway proximity", label:"Ocean Parkway",  score: 0.68, raw:"0.10 mi / 161 m  → elevated" },
-  { section:"Subway proximity", label:"Sea Breeze Ave", score: 0.42, raw:"0.18 mi / 290 m" },
-  { section:"Subway proximity", label:"West 5 Street",  score: 0.29, raw:"0.22 mi / 354 m" },
-  { section:"Subway proximity", label:"Surf Ave",       score: 0.61, raw:"0.12 mi / 193 m  → elevated" },
-  { section:"Subway proximity", label:"West 24 Street", score: 0.00, raw:"0.55 mi / 885 m  → clear" },
+  { section:"Spike 5 · subway proximity", label:"Neptune Ave",    score: 0.00, raw:"0.48 mi / 773 m  → clear" },
+  { section:"Spike 5 · subway proximity", label:"Ocean Parkway",  score: 0.68, raw:"0.10 mi / 161 m  → elevated" },
+  { section:"Spike 5 · subway proximity", label:"Sea Breeze Ave", score: 0.42, raw:"0.18 mi / 290 m" },
+  { section:"Spike 5 · subway proximity", label:"West 5 Street",  score: 0.29, raw:"0.22 mi / 354 m" },
+  { section:"Spike 5 · subway proximity", label:"Surf Ave",       score: 0.61, raw:"0.12 mi / 193 m  → elevated" },
+  { section:"Spike 5 · subway proximity", label:"West 24 Street", score: 0.00, raw:"0.55 mi / 885 m  → clear" },
   // ── Circuit-level ────────────────────────────────────────────────────────────
   { section:"Circuit", label:"Circuit length",  score: 0.04, raw:"4.96 km  Σ=4960 m  ideal ~5 km" },
 ];
@@ -378,7 +378,7 @@ function buildLegend(id, factors, highlightFn) {
     row.className = 'factor-row';
     row.innerHTML = `
       <span class="fcolor" style="background:${hc(f.score)}"></span>
-      <span class="fname">${f.label} <span class="fraw">${f.raw}</span></span>
+      <span class="fname">${f.label}</span>
       <div class="fbar-bg"><div class="fbar" style="width:${f.score*100}%;background:${hc(f.score)}"></div></div>
       <span class="fscore">${Math.round(f.score * 100)}</span>`;
     let on = false;
