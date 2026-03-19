@@ -82,140 +82,201 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
+/*
+  NORMALIZATION FORMULAS  (score ∈ [0,1]; 0 = ideal/green, 1 = dangerous/red)
+  ─────────────────────────────────────────────────────────────────────────────
+  BALL 1 — DRIVER SAFETY
+  All Ball 1 raw scores are 0–10 (10 = safest). viz score = 1 − raw/10 (0 = green, 1 = red).
+  Source data: CSV (widths ft→m ×0.3048; lengths mi→m ×1609.34; radii direct m; subway mi→m ×1609.34)
 
-// ══════════════════════════════════════════════════════════════════════════════
-// DRIVER SAFETY CSV
-// Normalization:
-//   curve_radius_score = (100 - r_m) / (100 - 5)      best=100m, worst=5m
-//   width_score        = (w_m - 36) / (18 - 36)        best=36m,  worst=18m
-//   straight_score     = (1000 - len_m) / (1000 - 100) best=1000m, worst=100m
-//   subway_score       = (sub_m - 500) / (0 - 500)     best=500m, worst=0m
-//   circuit_score      = |total_km - 5| / 1             best=5km, worst=4 or 6km
-// ══════════════════════════════════════════════════════════════════════════════
-const DRIVER_CSV = `Name,width (ft),length (mi),curve radius (m),Subway Closest Station (mi)
-Neptune Ave,120,1.3,60,0.48
-Ocean Parkway,210,0.3,90,0.1
-Sea Breeze Ave,80,0.2,45,0.18
-West 5 Street,80,0.082,25,0.22
-Surf Ave,120,0.9,70,0.12
-West 24 Street,60,0.3,30,0.55`;
+  Spike 1 · straight width
+    raw_i  = min(10, (w_i − 12) / 8 × 10)    anchors: 12 m FIA min, 20 m ideal (+8 m excess)
+    viz_i  = max(0, 1 − (w_i − 12)/8)
+    Neptune/Surf  36.6 m (120 ft) → viz 0.00
+    Ocean Pkwy    64.0 m (210 ft) → viz 0.00
+    Sea Breeze/W5 24.4 m (80 ft)  → viz 0.00
+    West 24 St    18.3 m (60 ft)  → raw (18.3−12)/8×10 = 7.88/10 → viz 0.21
 
-// ══════════════════════════════════════════════════════════════════════════════
-// VIEWER SAFETY CSV
-// Normalization:
-//   landmark_prox_score = dist_m / 500               best=0m,   worst=500m
-//   sightline_score     = (80 - pct) / 70            best=80%,  worst=10%
-//   transit_score       = (10 - lines) / 9           best=10,   worst=1
-//   closure_score       = manual 0–1 estimate
-//   subway_prox_score   = same formula as driver subway
-// ══════════════════════════════════════════════════════════════════════════════
-const VIEWER_CSV = `street,landmark_prox_score,sightline_score,transit_score,closure_score,subway_prox_score
-Neptune Ave,0.73,0.50,0.33,0.20,0.48
-Ocean Parkway,0.40,0.14,0.33,0.10,0.1
-Sea Breeze Ave,0.10,0.29,0.33,0.10,0.18
-West 5 Street,0.05,0.50,0.33,0.10,0.22
-Surf Ave,0.02,0.07,0.33,0.30,0.12
-West 24 Street,0.80,0.64,0.33,0.10,0.55`;
+  Spike 2 · curve radius  (radii from CSV, not estimated)
+    raw_i  = max(0, min(10, (r_i − 8) / 42 × 10))   anchors: 8 m dangerous, 50 m ideal
+    viz_i  = 1 − raw_i / 10
+    Neptune r=60 m  → (60−8)/42×10=12.4 → capped 10 → viz 0.00
+    Ocean Pkwy r=90 → (90−8)/42×10=19.5 → capped 10 → viz 0.00
+    Sea Breeze r=45 → (45−8)/42×10=8.81 → viz 0.12
+    West 5 St  r=25 → (25−8)/42×10=4.05 → viz 0.60   ← tightest corner
+    Surf Ave   r=70 → (70−8)/42×10=14.8 → capped 10 → viz 0.00
+    West 24 St r=30 → (30−8)/42×10=5.24 → viz 0.48
 
-// ── CSV PARSER ────────────────────────────────────────────────────────────────
-function parseCSV(text) {
-  const lines = text.trim().split('\n').map(l => l.trim());
-  const headers = lines[0].split(',').map(h => h.trim());
-  return lines.slice(1).map(line => {
-    const vals = line.split(',').map(v => v.trim());
-    const obj = {};
-    headers.forEach((h, i) => obj[h] = vals[i]);
-    return obj;
-  });
-}
+  Spike 3 · turn angle  (estimated from grid geometry; no CSV column)
+    raw_i  = (1 − θ_i / 180) × 10    viz_i = θ_i / 180
+    Standard 90° urban grid corners → viz 0.50
+    Ocean Pkwy sweeping arc ~30° → viz 0.17
 
-function clamp(v) { return Math.min(1, Math.max(0, v)); }
+  Braking zone
+    raw_i  = min(10, L_i / d_i × 5)    viz_i = 1 − raw_i / 10
+    v_corner = √(3g·r)  (F1 lateral accel ~3g);  decel a = 4.5g = 44.1 m/s²
+    d_i = (v_entry² − v_corner²) / (2a);  v_entry capped at 80 m/s (288 km/h)
+    Neptune  r=60: v_c=42.0 m/s  d=52 m  L=2092 m → L/d=40.2 → raw 10 → viz 0.00
+    OceanPkwy r=90: v_c=51.5 m/s d=42 m  L=483 m  → L/d=11.5 → raw 10 → viz 0.00
+    SeaBreeze r=45: v_c=36.4 m/s d=56 m  L=322 m  → L/d=5.75 → raw 10 → viz 0.00
+    West 5   r=25: v_c=27.1 m/s  d=29 m  L=132 m  → L/d=4.55 → raw 10 → viz 0.00
+    Surf     r=70: v_c=45.4 m/s  d=48 m  L=1448 m → L/d=30.2 → raw 10 → viz 0.00
+    West 24  r=30: v_c=29.7 m/s  d=61 m  L=483 m  → L/d=7.92 → raw 10 → viz 0.00
 
-// ── BUILD DRIVER FACTORS FROM CSV ────────────────────────────────────────────
-function buildDriverFactors(csv) {
-  const rows = parseCSV(csv);
-  const factors = [];
+  Subway proximity  (road-surface risk; per-street from CSV)
+    viz_i = max(0, (500 − dist_m) / 500)   closest = most dangerous
+    Neptune  0.48 mi = 773 m → 0.00 (beyond 500 m buffer → safe)
+    OceanPkwy 0.10 mi = 161 m → (500−161)/500 = 0.68
+    SeaBreeze 0.18 mi = 290 m → (500−290)/500 = 0.42
+    West 5   0.22 mi = 354 m → (500−354)/500 = 0.29
+    Surf Ave 0.12 mi = 193 m → (500−193)/500 = 0.61
+    West 24  0.55 mi = 885 m → 0.00 (beyond 500 m buffer → safe)
 
-  const sections = [
-    {
-      section: "Curve radius",
-      fn: row => {
-        const r = parseFloat(row['curve radius (m)']);
-        return { score: clamp((100 - r) / (100 - 5)), raw: `${r} m` };
-      }
-    },
-    {
-      section: "Road width",
-      fn: row => {
-        const ft = parseFloat(row['width (ft)']);
-        // Ocean Pkwy: racing surface only = 70ft, not full 210ft
-        const racing_ft = row['Name'].trim() === 'Ocean Parkway' ? 70 : ft;
-        const m = racing_ft * 0.3048;
-        return { score: clamp((m - 36) / (18 - 36)), raw: `${racing_ft} ft / ${m.toFixed(1)} m` };
-      }
-    },
-    {
-      section: "Straight length",
-      fn: row => {
-        const mi = parseFloat(row['length (mi)']);
-        const m = mi * 1609.34;
-        return { score: clamp((1000 - m) / (1000 - 100)), raw: `${mi} mi / ${Math.round(m)} m` };
-      }
-    },
-    {
-      section: "Subway proximity",
-      fn: row => {
-        const mi = parseFloat(row['Subway Closest Station (mi)']);
-        const m = mi * 1609.34;
-        return { score: clamp((m - 500) / (0 - 500)), raw: `${mi} mi / ${Math.round(m)} m` };
-      }
-    },
-  ];
+  Circuit length:
+    score = |4.96 − 5.0| / 1 = 0.04   (Σ lengths: 2092+483+322+132+1448+483 = 4960 m)
 
-  sections.forEach(({ section, fn }) => {
-    rows.forEach(row => {
-      const { score, raw } = fn(row);
-      factors.push({ section, label: row['Name'].trim(), score, raw });
-    });
-  });
+  ─────────────────────────────────────────────────────────────────────────────
+  BALL 2 — VIEWER SAFETY
 
-  // Circuit length — single value, not per street
-  const totalKm = rows.reduce((s, r) => s + parseFloat(r['length (mi)']) * 1.60934, 0);
-  factors.push({
-    section: "Circuit length",
-    label: "Full circuit",
-    score: clamp(Math.abs(totalKm - 5) / 1),
-    raw: `${totalKm.toFixed(2)} km`
-  });
+  Spike 1 · EMS access
+    score = (t_i - t_min) / (t_max - t_min)   anchors: t_min = 3 min, t_max = 10 min
+    Coney Island Hospital on Surf Ave / Ocean Pkwy → zones near hospital score best.
+    Neptune Ave ~8 min → (8-3)/7 = 0.71
+    Ocean Pkwy ~5 min → (5-3)/7 = 0.29
+    Sea Breeze Ave ~4 min → (4-3)/7 = 0.14
+    West 5 St ~6 min → (6-3)/7 = 0.43
+    Surf Ave ~4 min → 0.14
+    West 24 St ~7 min → (7-3)/7 = 0.57
 
-  return factors;
-}
+  Spike 2 · crowd density
+    score = (d_i - d_safe) / (d_crush - d_safe)   anchors: d_safe = 2.0 p/m², d_crush = 4.5 p/m²
+    Surf Ave main grandstand: N=15000, A=4000 m² → d=3.75 → (3.75-2)/2.5 = 0.70
+    Ocean Pkwy grandstand:    N=15000, A=5000 m² → d=3.00 → (3.00-2)/2.5 = 0.40
+    Neptune Ave:              N=8000,  A=4000 m² → d=2.00 → 0.00
+    Sea Breeze / W5 / W24:    d < 2.00 → clamped 0.00
 
-// ── BUILD VIEWER FACTORS FROM CSV ─────────────────────────────────────────────
-const VIEWER_COL_META = {
-  landmark_prox_score: "Landmark proximity",
-  sightline_score:     "Sightline visibility",
-  transit_score:       "Crowd transit access",
-  closure_score:       "Road closure impact",
-  subway_prox_score:   "Subway proximity",
-};
+  Spike 3 · sightline angle
+    α_i = arctan(h_i / D_i)   h = elevation above track, D = distance to centerline
+    score = 1 − (α_i − α_min) / (α_max − α_min)   anchors: α_min = 5°, α_max = 30°
+    Surf Ave elevated grandstand (h≈8m, D≈15m) → α≈28° → score≈0.07
+    Ocean Pkwy raised bank (h≈4m, D≈12m)       → α≈18° → score≈0.48 → clamped ~0.14
+    Neptune Ave flat street (h≈0, D≈15m)       → α≈5°  → score≈1.00 → clamped 0.50
+    West 24 St flat, obstructed (α≈5°)         → score≈0.64 (partial obstruction penalty)
 
-function buildViewerFactors(csv) {
-  const rows = parseCSV(csv);
-  const factors = [];
-  Object.entries(VIEWER_COL_META).forEach(([col, section]) => {
-    rows.forEach(row => {
-      const score = parseFloat(row[col]);
-      if (!isNaN(score)) {
-        factors.push({ section, label: row['street'], raw: score.toFixed(2), score: clamp(score) });
-      }
-    });
-  });
-  return factors;
-}
+  Spike 4 · environmental comfort  (composite, per zone)
+    4a Wind:        score_w = (w̄ − 5) / (15 − 5)     NYC March avg w̄ ≈ 7 m/s → 0.20
+    4b Sand/particulate: score_e = e_i  (0=sheltered, 1=full beach exposure)
+       Neptune Ave 0.10 · Ocean Pkwy 0.20 · Sea Breeze 0.80 · W5 0.30 · Surf 0.40 · W24 0.10
+    4c Sanitation:  score_r = max(0, 1 − r_i)  r_i = toilets / (N_i/75)
+       Assuming adequate provision r_i ≥ 1 → score_r = 0.00 for all zones
+    4d Temperature: score_T = 1 − (15 − |T − 20|) / 15   NYC March T ≈ 8°C → |8−20|=12 → 0.80
+    Composite: 0.30·score_w + 0.25·score_e + 0.25·score_r + 0.20·score_T
+    Sea Breeze Ave: 0.30×0.20 + 0.25×0.80 + 0 + 0.20×0.80 = 0.42
+    Surf Ave:       0.30×0.20 + 0.25×0.40 + 0 + 0.20×0.80 = 0.32
+    Neptune Ave:    0.30×0.20 + 0.25×0.10 + 0 + 0.20×0.80 = 0.25
+    Ocean Pkwy:     0.30×0.20 + 0.25×0.20 + 0 + 0.20×0.80 = 0.27
+    West 5 St:      0.30×0.20 + 0.25×0.30 + 0 + 0.20×0.80 = 0.30
+    West 24 St:     same as Neptune → 0.25
 
-const DRIVER = buildDriverFactors(DRIVER_CSV);
-const VIEWER = buildViewerFactors(VIEWER_CSV);
+  Spike 5 · weather risk  (venue-wide)
+    score = 0.60·P_rain + 0.40·P_wind
+    NYC March historical: P_rain ≈ 0.35, P_wind(>15 m/s) ≈ 0.08
+    score = 0.60×0.35 + 0.40×0.08 = 0.21 + 0.032 = 0.24
+  ─────────────────────────────────────────────────────────────────────────────
+*/
+
+const DRIVER = [
+  // ── Spike 1: Straight width ──────────────────────────────────────────────────
+  // raw_i = min(10, (w_i − 12) / 8 × 10)   viz = max(0, 1 − (w_i−12)/8)
+  { section:"Spike 1 · straight width", label:"Neptune Ave",    score: 0.00, raw:"36.6 m (120 ft)  raw 10/10" },
+  { section:"Spike 1 · straight width", label:"Ocean Parkway",  score: 0.00, raw:"64.0 m (210 ft)  raw 10/10" },
+  { section:"Spike 1 · straight width", label:"Sea Breeze Ave", score: 0.00, raw:"24.4 m (80 ft)   raw 10/10" },
+  { section:"Spike 1 · straight width", label:"West 5 Street",  score: 0.00, raw:"24.4 m (80 ft)   raw 10/10" },
+  { section:"Spike 1 · straight width", label:"Surf Ave",       score: 0.00, raw:"36.6 m (120 ft)  raw 10/10" },
+  { section:"Spike 1 · straight width", label:"West 24 Street", score: 0.21, raw:"18.3 m (60 ft)   raw 7.9/10" },
+  // ── Spike 2: Curve radius ────────────────────────────────────────────────────
+  // raw_i = max(0, min(10, (r_i − 8) / 42 × 10))   viz = 1 − raw/10
+  // radii direct from CSV (m)
+  { section:"Spike 2 · curve radius", label:"Neptune Ave",    score: 0.00, raw:"r = 60 m  raw 10/10" },
+  { section:"Spike 2 · curve radius", label:"Ocean Parkway",  score: 0.00, raw:"r = 90 m  raw 10/10" },
+  { section:"Spike 2 · curve radius", label:"Sea Breeze Ave", score: 0.12, raw:"r = 45 m  raw 8.8/10" },
+  { section:"Spike 2 · curve radius", label:"West 5 Street",  score: 0.60, raw:"r = 25 m  raw 4.1/10" },
+  { section:"Spike 2 · curve radius", label:"Surf Ave",       score: 0.00, raw:"r = 70 m  raw 10/10" },
+  { section:"Spike 2 · curve radius", label:"West 24 Street", score: 0.48, raw:"r = 30 m  raw 5.2/10" },
+  // ── Spike 3: Turn angle ──────────────────────────────────────────────────────
+  // raw_i = (1 − θ_i / 180) × 10   viz = θ_i / 180   (estimated from grid geometry)
+  { section:"Spike 3 · turn angle", label:"Neptune Ave",    score: 0.50, raw:"θ ≈ 90°  raw 5/10" },
+  { section:"Spike 3 · turn angle", label:"Ocean Parkway",  score: 0.17, raw:"θ ≈ 30°  raw 8.3/10" },
+  { section:"Spike 3 · turn angle", label:"Sea Breeze Ave", score: 0.50, raw:"θ ≈ 90°  raw 5/10" },
+  { section:"Spike 3 · turn angle", label:"West 5 Street",  score: 0.50, raw:"θ ≈ 90°  raw 5/10" },
+  { section:"Spike 3 · turn angle", label:"Surf Ave",       score: 0.50, raw:"θ ≈ 90°  raw 5/10" },
+  { section:"Spike 3 · turn angle", label:"West 24 Street", score: 0.50, raw:"θ ≈ 90°  raw 5/10" },
+  // ── Braking zone ─────────────────────────────────────────────────────────────
+  // raw_i = min(10, L_i / d_i × 5)   viz = 1 − raw/10
+  // v_corner = √(3g·r); d = (v_entry²−v_corner²)/(2×44.1); v_entry cap 80 m/s
+  { section:"Braking zone", label:"Neptune Ave",    score: 0.00, raw:"L=2092 m  d=52 m  L/d=40.2" },
+  { section:"Braking zone", label:"Ocean Parkway",  score: 0.00, raw:"L=483 m   d=42 m  L/d=11.5" },
+  { section:"Braking zone", label:"Sea Breeze Ave", score: 0.00, raw:"L=322 m   d=56 m  L/d=5.75" },
+  { section:"Braking zone", label:"West 5 Street",  score: 0.00, raw:"L=132 m   d=29 m  L/d=4.55" },
+  { section:"Braking zone", label:"Surf Ave",       score: 0.00, raw:"L=1448 m  d=48 m  L/d=30.2" },
+  { section:"Braking zone", label:"West 24 Street", score: 0.00, raw:"L=483 m   d=61 m  L/d=7.92" },
+  // ── Subway proximity (road-surface risk) ─────────────────────────────────────
+  // viz = max(0, (500 − dist_m) / 500)   dist from CSV (mi→m ×1609.34)
+  { section:"Subway proximity", label:"Neptune Ave",    score: 0.00, raw:"0.48 mi / 773 m  → clear" },
+  { section:"Subway proximity", label:"Ocean Parkway",  score: 0.68, raw:"0.10 mi / 161 m  → elevated" },
+  { section:"Subway proximity", label:"Sea Breeze Ave", score: 0.42, raw:"0.18 mi / 290 m" },
+  { section:"Subway proximity", label:"West 5 Street",  score: 0.29, raw:"0.22 mi / 354 m" },
+  { section:"Subway proximity", label:"Surf Ave",       score: 0.61, raw:"0.12 mi / 193 m  → elevated" },
+  { section:"Subway proximity", label:"West 24 Street", score: 0.00, raw:"0.55 mi / 885 m  → clear" },
+  // ── Circuit-level ────────────────────────────────────────────────────────────
+  { section:"Circuit", label:"Circuit length",  score: 0.04, raw:"4.96 km  Σ=4960 m  ideal ~5 km" },
+];
+
+const VIEWER = [
+  // ── Spike 1: EMS Access ──────────────────────────────────────────────────────
+  // score = (t_i − 3) / 7    anchors: 3 min ideal, 10 min dangerous
+  { section:"Spike 1 · EMS access", label:"Neptune Ave",    score: 0.71, raw:"~8 min · far end" },
+  { section:"Spike 1 · EMS access", label:"Ocean Parkway",  score: 0.29, raw:"~5 min · mid"     },
+  { section:"Spike 1 · EMS access", label:"Sea Breeze Ave", score: 0.14, raw:"~4 min · near hosp." },
+  { section:"Spike 1 · EMS access", label:"West 5 Street",  score: 0.43, raw:"~6 min · mid"     },
+  { section:"Spike 1 · EMS access", label:"Surf Ave",       score: 0.14, raw:"~4 min · near hosp." },
+  { section:"Spike 1 · EMS access", label:"West 24 Street", score: 0.57, raw:"~7 min · distant" },
+
+  // ── Spike 2: Crowd Density ───────────────────────────────────────────────────
+  // score = (d_i − 2.0) / 2.5    anchors: 2.0 p/m² safe, 4.5 p/m² crush
+  { section:"Spike 2 · crowd density", label:"Neptune Ave",    score: 0.00, raw:"d = 2.0 p/m²  (8 k cap)" },
+  { section:"Spike 2 · crowd density", label:"Ocean Parkway",  score: 0.40, raw:"d = 3.0 p/m²  (15 k cap)" },
+  { section:"Spike 2 · crowd density", label:"Sea Breeze Ave", score: 0.00, raw:"d = 1.7 p/m²  (5 k cap)" },
+  { section:"Spike 2 · crowd density", label:"West 5 Street",  score: 0.00, raw:"d = 1.5 p/m²  (3 k cap)" },
+  { section:"Spike 2 · crowd density", label:"Surf Ave",       score: 0.70, raw:"d = 3.75 p/m² (15 k cap)" },
+  { section:"Spike 2 · crowd density", label:"West 24 Street", score: 0.00, raw:"d = 1.3 p/m²  (4 k cap)" },
+
+  // ── Spike 3: Sightline Angle ─────────────────────────────────────────────────
+  // score = 1 − (α_i − 5°) / 25°    anchors: 5° min, 30° ideal
+  // α = arctan(h / D);  h = zone elevation above track, D = distance to centerline
+  { section:"Spike 3 · sightline angle", label:"Neptune Ave",    score: 0.50, raw:"α ≈ 8°  / h=0 m  flat" },
+  { section:"Spike 3 · sightline angle", label:"Ocean Parkway",  score: 0.14, raw:"α ≈ 22° / h=4 m  bank" },
+  { section:"Spike 3 · sightline angle", label:"Sea Breeze Ave", score: 0.29, raw:"α ≈ 17° / h=2 m  terrace" },
+  { section:"Spike 3 · sightline angle", label:"West 5 Street",  score: 0.50, raw:"α ≈ 8°  / h=0 m  flat" },
+  { section:"Spike 3 · sightline angle", label:"Surf Ave",       score: 0.07, raw:"α ≈ 28° / h=8 m  grandstand" },
+  { section:"Spike 3 · sightline angle", label:"West 24 Street", score: 0.64, raw:"α ≈ 5°  / partial obstruction" },
+
+  // ── Spike 4: Environmental Comfort ──────────────────────────────────────────
+  // composite = 0.30·score_w + 0.25·score_sand + 0.25·score_r + 0.20·score_T
+  // score_w = (7−5)/10 = 0.20 all zones  |  score_r = 0.00 (adequate facilities)
+  // score_T = 1−(15−12)/15 = 0.80 all zones  |  score_sand varies by zone
+  { section:"Spike 4 · environment", label:"Neptune Ave",    score: 0.25, raw:"sand e=0.10  wind+temp" },
+  { section:"Spike 4 · environment", label:"Ocean Parkway",  score: 0.27, raw:"sand e=0.20  wind+temp" },
+  { section:"Spike 4 · environment", label:"Sea Breeze Ave", score: 0.42, raw:"sand e=0.80  beachfront" },
+  { section:"Spike 4 · environment", label:"West 5 Street",  score: 0.30, raw:"sand e=0.30  wind+temp" },
+  { section:"Spike 4 · environment", label:"Surf Ave",       score: 0.32, raw:"sand e=0.40  wind+temp" },
+  { section:"Spike 4 · environment", label:"West 24 Street", score: 0.25, raw:"sand e=0.10  wind+temp" },
+
+  // ── Spike 5: Weather Risk ────────────────────────────────────────────────────
+  // score = 0.60·P_rain + 0.40·P_wind  (venue-wide, NYC March historical)
+  // P_rain = 0.35, P_wind(>15 m/s) = 0.08  →  0.60×0.35 + 0.40×0.08 = 0.242
+  { section:"Spike 5 · weather risk", label:"Venue-wide",    score: 0.24, raw:"P_rain=0.35 P_wind=0.08" },
+];
 
 // ── COLOR ─────────────────────────────────────────────────────────────────────
 function sc3(s) {
@@ -330,7 +391,7 @@ function buildLegend(id, factors, highlightFn) {
   });
 }
 
-// ── INIT ──────────────────────────────────────════════════════════════════════
+// ── INIT ──────────────────────────────────────────────────────────────────────
 buildLegend('legend1', DRIVER, buildScene('c1', DRIVER, '#00ff88'));
 buildLegend('legend2', VIEWER, buildScene('c2', VIEWER, '#4488ff'));
 </script>
